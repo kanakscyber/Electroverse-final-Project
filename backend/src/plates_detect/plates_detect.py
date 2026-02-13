@@ -397,4 +397,8 @@ def main():
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD:backend/src/plates_detect/plates_detect.py
     main()
+=======
+    main()
+>>>>>>> 21cf070 (Final Implementation of plate detection and ocr):vehicle-buffer/main.py
