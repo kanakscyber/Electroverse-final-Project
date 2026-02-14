@@ -11,7 +11,7 @@ from paddleocr import PaddleOCR
 
 
 DEFAULT_PLATES_DIR = "data/raw_buffer/plates"
-DEFAULT_OUT_CSV = "data/raw_buffer/logs/plate_ocr_bestframe.csv"
+DEFAULT_OUT_CSV = "data/results.logs"
 
 ALNUM_RE = re.compile(r"[^A-Z0-9]+")
 
