@@ -1,6 +1,5 @@
 from flask import Flask
 from pymongo import MongoClient
-from gridfs import GridFS
 import os
 
 
@@ -16,12 +15,13 @@ def create_app():
     mongo_url = os.environ.get('EV_MONGO')
     client = MongoClient(mongo_url)
     db = client.video_storage_db
-    db.fs.files.create_index('uploadDate', expireAfterSeconds=604800)
-    fs = GridFS(db)
     app.config['DB'] = db
-    app.config['FS'] = fs
-
-    # Register blueprints
+# Replace the GridFS section with:
+    db.videos.create_index('upload_date', expireAfterSeconds=604800)
+    db.videos.create_index('camera_id')
+    db.videos.create_index('plate_numbers')
+    app.config['DB'] = db
+        # Register blueprints
     from src.server.users_routes import bp as users_bp
     from src.server.videos_routes import bp as videos_bp
 

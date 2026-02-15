@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   
   const useHttps = env.VITE_USE_HTTPS === 'true'
-  const apiUrl = env.VITE_API_URL || 'http://localhost:5000'
+  const apiUrl = env.VITE_API_URL
   
   // Paths to SSL certificates (change if needed)
   const certPath = path.resolve(__dirname, 'localhost-cert.pem')

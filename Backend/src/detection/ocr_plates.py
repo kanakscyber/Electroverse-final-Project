@@ -10,8 +10,8 @@ import numpy as np
 import easyocr
 
 
-DEFAULT_PLATES_DIR = "data/raw_buffer/plates"
-DEFAULT_OUT_CSV = "data/raw_buffer/logs/plate_ocr.csv"
+DEFAULT_PLATES_DIR = os.environ.get('EV_PLATES_DIR', 'data/plates')
+DEFAULT_OUT_CSV = os.environ.get('EV_PLATES_CSV', 'data/plates.csv')
 
 ALNUM_RE = re.compile(r"[^A-Z0-9]+")
 PLATE_RE = re.compile(r"^([A-Z]{2})([0-9]{1,2})([A-Z]{1,2})([0-9]{4})$")

@@ -138,12 +138,12 @@ def quality_score(img_bgr) -> float:
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video", type=str, default="data/record.mp4", help="path to input mp4")
-    ap.add_argument("--buffer-min", type=int, default=4, help="rolling buffer minutes")
-    ap.add_argument("--chunk-sec", type=int, default=10, help="chunk length in seconds")
+    ap.add_argument("--video", type=str, default=os.environ.get('EV_VIDEO_PATH', 'data/record.mp4'), help="path to input mp4")
+    ap.add_argument("--buffer-min", type=int, default=os.environ.get('EV_BUFFER_MIN', 4), help="rolling buffer minutes")
+    ap.add_argument("--chunk-sec", type=int, default=os.environ.get('EV_CHUNK_SEC', 10), help="chunk length in seconds")
 
     ap.add_argument("--car-model", type=str, default="yolov8n.pt", help="YOLO model for vehicles")
-    ap.add_argument("--plate-model", type=str, default="", help="path to plate model .pt (optional)")
+    ap.add_argument("--plate-model", type=str, default="", help="yolo.pt")
 
     ap.add_argument("--car-conf", type=float, default=0.35)
     ap.add_argument("--plate-conf", type=float, default=0.35)
@@ -167,9 +167,9 @@ def main():
     print("Using video:", args.video, flush=True)
 
     # Output dirs
-    chunks_dir = "data/raw_buffer/chunks"
-    plates_dir = "data/raw_buffer/plates"
-    logs_dir = "data/raw_buffer/logs"
+    chunks_dir = os.environ.get('EV_CHUNKS_DIR', 'data/chunks')
+    plates_dir = os.environ.get('EV_PLATES_DIR', 'data/plates')
+    logs_dir = os.environ.get('EV_LOGS_DIR', 'data/raw_buffer/logs')
     os.makedirs(chunks_dir, exist_ok=True)
     os.makedirs(plates_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
