@@ -4,7 +4,6 @@ import './App.css'
 import AuthContext from './AuthContext.jsx' 
 
 function App() {
-  const {isAuthenticated} = AuthContext{}
   return (
     <AuthContext>
       <Player />
@@ -12,4 +11,4 @@ function App() {
   )
 }
 
-export default App
+export default App;
