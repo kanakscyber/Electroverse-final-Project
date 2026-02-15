@@ -1,6 +1,6 @@
-// In Player.jsx - ADD useEffect to load all videos on mount
-
-import React, { useRef, useState, useContext, useEffect } from "react";
+import React, { useRef, useState, useContext } from "react";
+import AuthContext from './AuthContext.jsx';
+import apiFetch from './api';
 
 function Player() {
   const videoRef = useRef(null);
@@ -8,21 +8,10 @@ function Player() {
 
   const [videoUrl, setVideoUrl] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
-  const [searchStats, setSearchStats] = useState({ total: 0, filtered: 0 });
   const [query, setQuery] = useState({ date: '', start_time: '', end_time: '', camera_id: '', plate: '' });
-  const [loading, setLoading] = useState(false);
-
-  // Load all videos on mount
-  useEffect(() => {
-    if (isAuthenticated) {
-      performSearch();
-    }
-  }, [isAuthenticated]);
 
   const performSearch = async (e) => {
     e && e.preventDefault();
-    setLoading(true);
-    
     const params = new URLSearchParams();
     Object.entries(query).forEach(([k, v]) => { if (v) params.append(k, v); });
 
@@ -31,76 +20,68 @@ function Player() {
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         alert(err.message || err.error || 'Search failed');
-        setSearchResults([]);
         return;
       }
 
       const data = await res.json();
-      setSearchResults(data.results || []);
-      setSearchStats({ total: data.total || 0, filtered: data.filtered || 0 });
+      setSearchResults(Array.isArray(data) ? data : []);
     } catch (err) {
       alert('Network error');
-      setSearchResults([]);
-    } finally {
-      setLoading(false);
     }
   };
 
-  const clearFilters = () => {
-    setQuery({ date: '', start_time: '', end_time: '', camera_id: '', plate: '' });
-    setTimeout(() => performSearch(), 100);
+  const loadVideo = async (video_id) => {
+    // Use the server-decrypted endpoint as the video src so the browser can
+    // perform range requests and enable seeking. Browser will include cookies
+    // for same-origin requests; include crossOrigin for credentialed requests.
+    setVideoUrl(`/video/${video_id}`);
+    setTimeout(() => videoRef.current && videoRef.current.play(), 100);
   };
 
-  // ... rest of the component remains same, just update the UI to show stats
+  if (!isAuthenticated) {
+    return <div style={{ textAlign: 'center', marginTop: 40 }}>Please sign in to view videos.</div>;
+  }
 
   return (
-    <div style={{ maxWidth: 1200, margin: '24px auto', fontFamily: 'system-ui, sans-serif' }}>
+    <div style={{ maxWidth: 900, margin: '24px auto', fontFamily: 'Arial, sans-serif' }}>
       <h2>Secure Video Viewer</h2>
-      
-      <div style={{ marginBottom: 16, color: '#666' }}>
-        Showing {searchStats.filtered} of {searchStats.total} videos
-      </div>
 
-      <form onSubmit={performSearch} style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <input 
-          placeholder="Date (YYYY-MM-DD)" 
-          value={query.date} 
-          onChange={e => setQuery({...query, date: e.target.value})} 
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd' }}
-        />
-        <input 
-          placeholder="Start (HH:MM:SS)" 
-          value={query.start_time} 
-          onChange={e => setQuery({...query, start_time: e.target.value})} 
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd' }}
-        />
-        <input 
-          placeholder="End (HH:MM:SS)" 
-          value={query.end_time} 
-          onChange={e => setQuery({...query, end_time: e.target.value})} 
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd' }}
-        />
-        <input 
-          placeholder="Camera ID" 
-          value={query.camera_id} 
-          onChange={e => setQuery({...query, camera_id: e.target.value})} 
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd' }}
-        />
-        <input 
-          placeholder="Plate" 
-          value={query.plate} 
-          onChange={e => setQuery({...query, plate: e.target.value})} 
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd' }}
-        />
-        <button type="submit" disabled={loading} style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: '#2563eb', color: '#fff', cursor: 'pointer' }}>
-          {loading ? 'Searching...' : 'Search'}
-        </button>
-        <button type="button" onClick={clearFilters} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
-          Clear
-        </button>
+      <form onSubmit={performSearch} style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <input placeholder="Date (YYYY-MM-DD)" value={query.date} onChange={e => setQuery({...query, date: e.target.value})} />
+        <input placeholder="Start (HH:MM:SS)" value={query.start_time} onChange={e => setQuery({...query, start_time: e.target.value})} />
+        <input placeholder="End (HH:MM:SS)" value={query.end_time} onChange={e => setQuery({...query, end_time: e.target.value})} />
+        <input placeholder="Camera ID" value={query.camera_id} onChange={e => setQuery({...query, camera_id: e.target.value})} />
+        <input placeholder="Plate" value={query.plate} onChange={e => setQuery({...query, plate: e.target.value})} />
+        <button type="submit">Search</button>
       </form>
 
-      {/* Rest remains the same */}
+      <div style={{ display: 'flex', gap: 16 }}>
+        <div style={{ flex: 1 }}>
+          <h4>Results</h4>
+          {searchResults.length === 0 && <div>No results</div>}
+          <ul>
+            {searchResults.map(r => (
+              <li key={r.video_id} style={{ marginBottom: 8 }}>
+                <strong>{r.filename}</strong> — {r.upload_date_ist} — {r.camera_id}
+                <div>
+                  <button onClick={() => loadVideo(r.video_id)} style={{ marginTop: 6 }}>Load</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div style={{ flex: 1 }}>
+          <h4>Player</h4>
+          {videoUrl ? (
+            <video ref={videoRef} src={videoUrl} controls style={{ width: '100%' }} crossOrigin="use-credentials" />
+          ) : (
+            <div style={{ padding: 20, border: '1px dashed #ccc' }}>No video loaded</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
+
+export default Player;

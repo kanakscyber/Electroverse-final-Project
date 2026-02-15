@@ -4,7 +4,7 @@ import os
 from pymongo import MongoClient
 
 # Simple helper functions for user management used by server
-client = MongoClient(os.environ.get('EV_MONGO'))
+client = MongoClient(os.environ.get('ev_mongo'))
 db = client.user_storage_db
 db.users.create_index("email", unique=True)
 db.users.create_index("username", unique=True)

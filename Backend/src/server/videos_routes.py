@@ -4,94 +4,353 @@ from src.server.auth import token_required
 from src.encryption import decryption as decryption_mod
 import os
 from pathlib import Path
+from gridfs import GridFSBucket
+import tempfile
 
 bp = Blueprint('videos', __name__)
 @bp.route('/video/<video_id>')
 @token_required
 def stream_video(video_id):
+    # Return decrypted stream by default for frontend compatibility
+    db = current_app.config['DB']
+    video = db.videos.find_one({'_id': ObjectId(video_id)})
+
+    if not video:
+        return jsonify({"error": "Video not found"}), 404
+
+    cam_id = video.get('camera_id')
+    user_payload = request.user
+    if user_payload.get('role') != 'admin' and cam_id not in user_payload.get('assigned_cameras', []):
+        return jsonify({"error": "Not authorized to view this camera's video"}), 403
+
+    range_header = request.headers.get('Range', None)
+    return _decrypted_response_for_video(db, video, range_header)
+
+
+def _decrypted_response_for_video(db, video, range_header=None):
+    """Helper: returns a Flask Response streaming the decrypted MP4 for the given video document.
+    Supports Range requests by decrypting to a temp file when a Range header is present.
+    """
+    key = decryption_mod.load_key()
+
+    def send_range_from_file(path):
+        file_size = os.path.getsize(path)
+        if not range_header:
+            def gen():
+                with open(path, 'rb') as f:
+                    try:
+                        while True:
+                            chunk = f.read(64 * 1024)
+                            if not chunk:
+                                break
+                            yield chunk
+                    finally:
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+
+            return Response(gen(), status=200, mimetype='video/mp4', headers={
+                'Content-Length': str(file_size),
+                'Accept-Ranges': 'bytes'
+            })
+
+        try:
+            units, rng = range_header.split('=')
+            start_str, end_str = rng.split('-')
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else file_size - 1
+        except Exception:
+            return jsonify({'error': 'Invalid Range header'}), 400
+
+        if start >= file_size:
+            return Response(status=416)
+
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        def partial_gen():
+            with open(path, 'rb') as f:
+                f.seek(start)
+                remaining = length
+                try:
+                    while remaining > 0:
+                        chunk_size = min(64 * 1024, remaining)
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+                finally:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+
+        headers = {
+            'Content-Range': f'bytes {start}-{end}/{file_size}',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': str(length),
+        }
+        return Response(partial_gen(), status=206, mimetype='video/mp4', headers=headers)
+
+    # Inline blob
+    encrypted_data = video.get('video_data')
+    if encrypted_data:
+        tmp_mp4 = decryption_mod.decrypt_blob_to_path(encrypted_data, key)
+        if not tmp_mp4 or not os.path.exists(tmp_mp4):
+            return jsonify({"error": "Decryption failed"}), 500
+
+        return send_range_from_file(tmp_mp4)
+
+    # GridFS
+    gridfs_id = video.get('gridfs_id')
+    if gridfs_id:
+        try:
+            bucket = GridFSBucket(db)
+            grid_out = bucket.open_download_stream(ObjectId(gridfs_id))
+
+            if range_header:
+                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                tmpf.close()
+                ok = decryption_mod.decrypt_stream_to_path(grid_out, tmpf.name, key)
+                try:
+                    grid_out.close()
+                except Exception:
+                    pass
+                if not ok:
+                    try:
+                        os.remove(tmpf.name)
+                    except Exception:
+                        pass
+                    return jsonify({"error": "Decryption failed"}), 500
+
+                return send_range_from_file(tmpf.name)
+
+            def decrypted_gen():
+                try:
+                    for chunk in decryption_mod.decrypt_stream_generator(grid_out, key):
+                        yield chunk
+                finally:
+                    try:
+                        grid_out.close()
+                    except Exception:
+                        pass
+
+            return Response(decrypted_gen(), mimetype='video/mp4', headers={'Accept-Ranges': 'bytes'})
+        except Exception:
+            return jsonify({"error": "Decryption failed"}), 500
+
+    # Disk fallback
     try:
-        db = current_app.config['DB']
-        video = db.videos.find_one({'_id': ObjectId(video_id)})
-        
-        if not video:
-            return jsonify({"error": "Video not found"}), 404
-            
-        cam_id = video.get('camera_id')
-        user_payload = request.user
-        if user_payload.get('role') != 'admin' and cam_id not in user_payload.get('assigned_cameras', []):
-            return jsonify({"error": "Not authorized to view this camera's video"}), 403
+        filename = video.get('filename')
+        data_root = Path(__file__).resolve().parents[3] / 'data'
+        encrypted_path = data_root / 'encrypted' / filename
+        if encrypted_path.exists():
+            fobj = open(encrypted_path, 'rb')
 
-        video_data = video.get('video_data')
-        if not video_data:
-            # Fallback: try to load encrypted file from backend/data/encrypted
-            try:
-                filename = video.get('filename')
-                data_root = Path(__file__).resolve().parents[3] / 'data'
-                encrypted_path = data_root / 'encrypted' / filename
-                if encrypted_path.exists():
-                    with open(encrypted_path, 'rb') as f:
-                        video_data = f.read()
-                else:
-                    return jsonify({"error": "Video data not found"}), 404
-            except Exception:
-                return jsonify({"error": "Video data not found"}), 404
+            if range_header:
+                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                tmpf.close()
+                ok = decryption_mod.decrypt_stream_to_path(fobj, tmpf.name, key)
+                try:
+                    fobj.close()
+                except Exception:
+                    pass
+                if not ok:
+                    try:
+                        os.remove(tmpf.name)
+                    except Exception:
+                        pass
+                    return jsonify({"error": "Decryption failed"}), 500
 
-        return Response(video_data, mimetype='application/octet-stream')
-    except Exception as e:
+                return send_range_from_file(tmpf.name)
+
+            def decrypted_file_gen():
+                try:
+                    for chunk in decryption_mod.decrypt_stream_generator(fobj, key):
+                        yield chunk
+                finally:
+                    try:
+                        fobj.close()
+                    except Exception:
+                        pass
+
+            return Response(decrypted_file_gen(), mimetype='video/mp4', headers={'Accept-Ranges': 'bytes'})
+        else:
+            return jsonify({"error": "Video data not found"}), 404
+    except Exception:
         return jsonify({"error": "Video not found"}), 404
     
     
 @bp.route('/video/decrypted/<video_id>')
 @token_required
 def stream_decrypted(video_id):
-    try:
-        db = current_app.config['DB']
-        video = db.videos.find_one({'_id': ObjectId(video_id)})
-        
-        if not video:
-            return jsonify({"error": "Video not found"}), 404
-            
-        cam_id = video.get('camera_id')
-        user_payload = request.user
-        if user_payload.get('role') != 'admin' and cam_id not in user_payload.get('assigned_cameras', []):
-            return jsonify({"error": "Not authorized to view this camera's video"}), 403
+    db = current_app.config['DB']
+    video = db.videos.find_one({'_id': ObjectId(video_id)})
 
-        encrypted_data = video.get('video_data')
-        if not encrypted_data:
-            # Fallback: try to load encrypted file from backend/data/encrypted
-            try:
-                filename = video.get('filename')
-                data_root = Path(__file__).resolve().parents[3] / 'data'
-                encrypted_path = data_root / 'encrypted' / filename
-                if encrypted_path.exists():
-                    with open(encrypted_path, 'rb') as f:
-                        encrypted_data = f.read()
-                else:
-                    return jsonify({"error": "Video data not found"}), 404
-            except Exception:
-                return jsonify({"error": "Video data not found"}), 404
+    if not video:
+        return jsonify({"error": "Video not found"}), 404
 
-        key = decryption_mod.load_key()
+    cam_id = video.get('camera_id')
+    user_payload = request.user
+    if user_payload.get('role') != 'admin' and cam_id not in user_payload.get('assigned_cameras', []):
+        return jsonify({"error": "Not authorized to view this camera's video"}), 403
+
+    key = decryption_mod.load_key()
+
+    range_header = request.headers.get('Range', None)
+
+    def send_range_from_file(path):
+        file_size = os.path.getsize(path)
+        if not range_header:
+            def gen():
+                with open(path, 'rb') as f:
+                    try:
+                        while True:
+                            chunk = f.read(64 * 1024)
+                            if not chunk:
+                                break
+                            yield chunk
+                    finally:
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+
+            return Response(gen(), status=200, mimetype='video/mp4', headers={
+                'Content-Length': str(file_size),
+                'Accept-Ranges': 'bytes'
+            })
+
+        # Parse range
+        try:
+            units, rng = range_header.split('=')
+            start_str, end_str = rng.split('-')
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else file_size - 1
+        except Exception:
+            return jsonify({'error': 'Invalid Range header'}), 400
+
+        if start >= file_size:
+            return Response(status=416)
+
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        def partial_gen():
+            with open(path, 'rb') as f:
+                f.seek(start)
+                remaining = length
+                try:
+                    while remaining > 0:
+                        chunk_size = min(64 * 1024, remaining)
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+                finally:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+
+        headers = {
+            'Content-Range': f'bytes {start}-{end}/{file_size}',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': str(length),
+        }
+        return Response(partial_gen(), status=206, mimetype='video/mp4', headers=headers)
+
+    # If encrypted blob stored directly on document (legacy), decrypt to temp file for range support
+    encrypted_data = video.get('video_data')
+    if encrypted_data:
         tmp_mp4 = decryption_mod.decrypt_blob_to_path(encrypted_data, key)
         if not tmp_mp4 or not os.path.exists(tmp_mp4):
             return jsonify({"error": "Decryption failed"}), 500
 
-        def generate_file():
-            try:
-                with open(tmp_mp4, 'rb') as f:
-                    while True:
-                        chunk = f.read(64 * 1024)
-                        if not chunk:
-                            break
-                        yield chunk
-            finally:
+        return send_range_from_file(tmp_mp4)
+
+    # If stored in GridFS, for Range requests decrypt to temp file; otherwise stream decrypt on-the-fly
+    gridfs_id = video.get('gridfs_id')
+    if gridfs_id:
+        try:
+            bucket = GridFSBucket(db)
+            grid_out = bucket.open_download_stream(ObjectId(gridfs_id))
+
+            if range_header:
+                # decrypt whole stream to temp file then serve range
+                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                tmpf.close()
+                ok = decryption_mod.decrypt_stream_to_path(grid_out, tmpf.name, key)
                 try:
-                    os.remove(tmp_mp4)
+                    grid_out.close()
                 except Exception:
                     pass
+                if not ok:
+                    try:
+                        os.remove(tmpf.name)
+                    except Exception:
+                        pass
+                    return jsonify({"error": "Decryption failed"}), 500
 
-        return Response(generate_file(), mimetype='video/mp4')
-    except Exception as e:
+                return send_range_from_file(tmpf.name)
+
+            # No Range header: stream decrypted bytes on-the-fly
+            def decrypted_gen():
+                try:
+                    for chunk in decryption_mod.decrypt_stream_generator(grid_out, key):
+                        yield chunk
+                finally:
+                    try:
+                        grid_out.close()
+                    except Exception:
+                        pass
+
+            return Response(decrypted_gen(), mimetype='video/mp4', headers={'Accept-Ranges': 'bytes'})
+        except Exception:
+            return jsonify({"error": "Decryption failed"}), 500
+
+    # Fallback: encrypted file on disk
+    try:
+        filename = video.get('filename')
+        data_root = Path(__file__).resolve().parents[3] / 'data'
+        encrypted_path = data_root / 'encrypted' / filename
+        if encrypted_path.exists():
+            fobj = open(encrypted_path, 'rb')
+
+            if range_header:
+                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                tmpf.close()
+                ok = decryption_mod.decrypt_stream_to_path(fobj, tmpf.name, key)
+                try:
+                    fobj.close()
+                except Exception:
+                    pass
+                if not ok:
+                    try:
+                        os.remove(tmpf.name)
+                    except Exception:
+                        pass
+                    return jsonify({"error": "Decryption failed"}), 500
+
+                return send_range_from_file(tmpf.name)
+
+            def decrypted_file_gen():
+                try:
+                    for chunk in decryption_mod.decrypt_stream_generator(fobj, key):
+                        yield chunk
+                finally:
+                    try:
+                        fobj.close()
+                    except Exception:
+                        pass
+
+            return Response(decrypted_file_gen(), mimetype='video/mp4', headers={'Accept-Ranges': 'bytes'})
+        else:
+            return jsonify({"error": "Video data not found"}), 404
+    except Exception:
         return jsonify({"error": "Video not found"}), 404
 
 # In videos_routes.py - MODIFY the search_videos function

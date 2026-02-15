@@ -2,6 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 from Crypto.Cipher import AES
+from typing import BinaryIO, Iterator
 
 
 def load_key(key_path=None):
@@ -46,6 +47,75 @@ def decrypt_blob_to_path(blob_bytes, key):
     except Exception as e:
         print(f"Decryption error: {e}")
         return None
+
+
+def decrypt_stream_to_path(stream: BinaryIO, output_path: str, key: bytes, chunk_size: int = 64 * 1024) -> bool:
+    """
+    Decrypt an encrypted stream (nonce[16] + tag[16] + ciphertext) and write plaintext to output_path.
+    Operates in constant memory and returns True on success.
+    """
+    try:
+        header = stream.read(32)
+        if len(header) < 32:
+            return False
+
+        nonce = header[:16]
+        tag = header[16:32]
+
+        cipher = AES.new(key, AES.MODE_EAX, nonce=nonce)
+
+        with open(output_path, 'wb') as out:
+            while True:
+                chunk = stream.read(chunk_size)
+                if not chunk:
+                    break
+                plaintext = cipher.decrypt(chunk)
+                out.write(plaintext)
+
+        # verify tag
+        cipher.verify(tag)
+        return True
+
+    except Exception as e:
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+        print(f"Decryption stream error: {e}")
+        return False
+
+
+def decrypt_stream_generator(stream: BinaryIO, key: bytes, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+    """
+    Generator that yields decrypted plaintext chunks from an encrypted stream.
+    Reads nonce+tag from the start of the stream, then yields plaintext chunks.
+    Raises an exception if verification fails at the end.
+    """
+    header = stream.read(32)
+    if len(header) < 32:
+        raise ValueError("Encrypted stream too small")
+
+    nonce = header[:16]
+    tag = header[16:32]
+
+    cipher = AES.new(key, AES.MODE_EAX, nonce=nonce)
+
+    try:
+        while True:
+            chunk = stream.read(chunk_size)
+            if not chunk:
+                break
+            yield cipher.decrypt(chunk)
+
+        # verify tag after all ciphertext processed
+        cipher.verify(tag)
+
+    finally:
+        try:
+            if hasattr(stream, 'close'):
+                stream.close()
+        except Exception:
+            pass
 
 
 def decrypt_file(input_path, output_path, key):
